@@ -1,0 +1,145 @@
+---
+# Layer: pam — the pam_group hook, group.conf entries (declarative_access
+# format), local groups, the authselect-drift correlation, and the
+# opt-in pamtester probe.
+
+- name: Probe PAM configuration
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      pam='{{ auth_sleuth_pam_sshd_file }}'
+      gc='{{ auth_sleuth_group_conf_file }}'
+      if [ -r "$pam" ]; then
+        grep -Eq '^auth.*pam_group\.so' "$pam" && echo "HOOK=present" || echo "HOOK=absent"
+      else
+        echo "HOOK=unreadable"
+      fi
+      if [ -r "$gc" ]; then
+        echo "GCONF<<E"
+        grep -Ev '^\s*(#|$)' "$gc" || true
+        echo "E"
+      else
+        echo "GCONF_STATE=unreadable"
+      fi
+      echo "SSHD=$(systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo unknown)"
+      command -v authselect >/dev/null && echo "AUTHSELECT=present" || echo "AUTHSELECT=absent"
+      command -v pamtester >/dev/null && echo "PAMTESTER=present" || echo "PAMTESTER=absent"
+  register: _auth_sleuth_pam
+  changed_when: false
+
+- name: Build the expected group.conf lines
+  ansible.builtin.set_fact:
+    _auth_sleuth_expected_lines: >-
+      {{ _auth_sleuth_expected_lines | default([]) + [{
+           'entry': item,
+           'line': (('*;*;' if item.all_services | default(false) else 'sshd;!tty*;')
+                    ~ ('%' if item.group | default(true) else '')
+                    ~ item.principal
+                    ~ ('@' ~ auth_sleuth_domain if auth_sleuth_domain | length > 0 else '')
+                    ~ ';Al0000-2400;' ~ item.local_group)}] }}
+  loop: "{{ auth_sleuth_pam_group_entries }}"
+  loop_control:
+    label: "{{ item.principal | default('?') }}"
+
+- name: Record PAM findings
+  vars:
+    _o: "{{ _auth_sleuth_pam.stdout }}"
+    _hook: "{{ (_o | regex_search('HOOK=(.*)', '\\1') or ['unreadable']) | first | trim }}"
+    _gconf: "{{ (_o | regex_search('GCONF<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+    _sshd: "{{ (_o | regex_search('SSHD=(.*)', '\\1') or ['unknown']) | first | trim }}"
+    _authselect: "{{ 'AUTHSELECT=present' in _o }}"
+    _want_lines: "{{ _auth_sleuth_expected_lines | default([]) | map(attribute='line') | list }}"
+    _gconf_lines: "{{ _gconf.split('\n') | map('trim') | select | list }}"
+    _missing_lines: "{{ _want_lines | reject('in', _gconf_lines) | list }}"
+    _entries_ok: "{{ auth_sleuth_pam_group_entries | length > 0 and _missing_lines | length == 0 }}"
+    _drift: >-
+      {{ auth_sleuth_pam_group_entries | length > 0
+         and _hook == 'absent' and _missing_lines | length == 0 }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'pam_group_hook', 'layer': 'pam',
+         'status': 'skipped' if auth_sleuth_pam_group_entries | length == 0
+                   else ('skipped' if _hook == 'unreadable' else ('ok' if _hook == 'present' else 'fail')),
+         'detail': 'no pam_group entries expected' if auth_sleuth_pam_group_entries | length == 0
+                   else (auth_sleuth_pam_sshd_file ~ ' unreadable (need become?)') if _hook == 'unreadable'
+                   else ('pam_group.so hook ' ~ _hook ~ ' in ' ~ auth_sleuth_pam_sshd_file),
+         'remediation': 'reinsert_pam_group' if _hook == 'absent' and auth_sleuth_pam_group_entries | length > 0 else ''},
+        {'id': 'group_conf_entries', 'layer': 'pam',
+         'status': 'skipped' if auth_sleuth_pam_group_entries | length == 0
+                   else ('ok' if _missing_lines | length == 0 else 'fail'),
+         'detail': 'no entries expected' if auth_sleuth_pam_group_entries | length == 0
+                   else ('all ' ~ (_want_lines | length) ~ ' expected entries present'
+                         if _missing_lines | length == 0
+                         else 'missing from ' ~ auth_sleuth_group_conf_file ~ ': ' ~ (_missing_lines | join(' | '))),
+         'remediation': 'add_group_conf_entries' if _missing_lines | length > 0 else ''},
+        {'id': 'authselect_drift', 'layer': 'pam',
+         'status': 'warn' if _drift and _authselect else ('ok' if auth_sleuth_pam_group_entries | length > 0 else 'skipped'),
+         'detail': ('group.conf entries present but the pam_group.so hook is gone — '
+                    'authselect apply-changes likely regenerated ' ~ auth_sleuth_pam_sshd_file
+                    ~ ' (known caveat)') if _drift and _authselect
+                   else ('no drift detected' if auth_sleuth_pam_group_entries | length > 0 else ''),
+         'remediation': 'reinsert_pam_group' if _drift and _authselect else ''},
+        {'id': 'sshd_service', 'layer': 'pam',
+         'status': 'ok' if _sshd == 'active' else ('skipped' if _sshd == 'unknown' else 'fail'),
+         'detail': 'sshd: ' ~ _sshd,
+         'remediation': 'restart_sshd' if _sshd not in ['active', 'unknown'] else ''}]}) }}
+
+- name: Check the expected local groups exist
+  when: auth_sleuth_pam_group_entries | length > 0
+  ansible.builtin.command:
+    argv: [getent, group, "{{ item }}"]
+  register: _auth_sleuth_lg
+  changed_when: false
+  failed_when: false
+  loop: "{{ auth_sleuth_pam_group_entries | map(attribute='local_group') | unique | list }}"
+
+- name: Record local group findings
+  when: auth_sleuth_pam_group_entries | length > 0
+  vars:
+    _missing: >-
+      {{ _auth_sleuth_lg.results | selectattr('rc', 'ne', 0)
+         | map(attribute='item') | list }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'local_groups_exist', 'layer': 'pam',
+         'status': 'ok' if _missing | length == 0 else 'fail',
+         'detail': 'all mapped local groups exist' if _missing | length == 0
+                   else 'missing local groups: ' ~ (_missing | join(', ')),
+         'remediation': '' if _missing | length == 0
+                        else 'manual: groupadd ' ~ (_missing | join(' '))}]}) }}
+
+- name: PAM probe with pamtester
+  when:
+    - auth_sleuth_pam_probe
+    - auth_sleuth_test_user | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      command -v pamtester >/dev/null || { echo "NOTOOL"; exit 0; }
+      u='{{ auth_sleuth_test_user }}'
+      pamtester sshd "$u" acct_mgmt </dev/null >/dev/null 2>&1 && a=ok || a=fail
+      pamtester sshd "$u" open_session </dev/null >/dev/null 2>&1 && s=ok || s=fail
+      echo "ACCT=$a SESSION=$s"
+  register: _auth_sleuth_pamtest
+  changed_when: false
+
+- name: Record the PAM probe
+  when:
+    - auth_sleuth_pam_probe
+    - auth_sleuth_test_user | length > 0
+  vars:
+    _no_tool: "{{ 'NOTOOL' in _auth_sleuth_pamtest.stdout }}"
+    _ok: "{{ 'ACCT=ok SESSION=ok' in _auth_sleuth_pamtest.stdout }}"
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'pam_probe', 'layer': 'pam',
+         'status': 'skipped' if _no_tool else ('ok' if _ok else 'fail'),
+         'detail': 'pamtester not installed' if _no_tool
+                   else 'pamtester sshd ' ~ auth_sleuth_test_user ~ ': ' ~ _auth_sleuth_pamtest.stdout,
+         'remediation': '' if _no_tool or _ok
+                        else 'inspect /var/log/secure for the pam module that rejected the account'}]}) }}

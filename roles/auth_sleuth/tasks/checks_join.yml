@@ -1,0 +1,85 @@
+---
+# Layer: join — realm membership and the host keytab.
+
+- name: Probe realm and keytab
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      if command -v realm >/dev/null; then
+        echo "REALM_LIST<<E"
+        realm list 2>/dev/null || true
+        echo "E"
+      else
+        echo "REALM_TOOL=missing"
+      fi
+      if command -v klist >/dev/null && [ -r '{{ auth_sleuth_krb5_keytab }}' ]; then
+        echo "KEYTAB<<E"
+        klist -k '{{ auth_sleuth_krb5_keytab }}' 2>/dev/null | tail -n +4 || true
+        echo "E"
+      else
+        echo "KEYTAB=unreadable-or-no-klist"
+      fi
+  register: _auth_sleuth_join
+  changed_when: false
+
+- name: Record join findings
+  vars:
+    _realm_missing: "{{ 'REALM_TOOL=missing' in _auth_sleuth_join.stdout }}"
+    _realm_out: "{{ (_auth_sleuth_join.stdout | regex_search('REALM_LIST<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+    _joined_here: >-
+      {{ auth_sleuth_domain | length > 0
+         and (auth_sleuth_domain | lower) in (_realm_out | lower) }}
+    _kt_missing: "{{ 'KEYTAB=unreadable-or-no-klist' in _auth_sleuth_join.stdout }}"
+    _kt_out: "{{ (_auth_sleuth_join.stdout | regex_search('KEYTAB<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'realm_joined', 'layer': 'join',
+         'status': 'skipped' if auth_sleuth_domain | length == 0
+                   else ('skipped' if _realm_missing else ('ok' if _joined_here else 'fail')),
+         'detail': 'no domain configured (local mode)' if auth_sleuth_domain | length == 0
+                   else ('realm command not installed (realmd)' if _realm_missing
+                   else ('joined to ' ~ auth_sleuth_domain if _joined_here
+                         else 'NOT joined to ' ~ auth_sleuth_domain)),
+         'remediation': '' if _joined_here or auth_sleuth_domain | length == 0
+                        else 'manual: realm join ' ~ auth_sleuth_domain ~ ' (needs credentials)'},
+        {'id': 'keytab_present', 'layer': 'join',
+         'status': 'skipped' if auth_sleuth_domain | length == 0
+                   else ('fail' if _kt_missing or _kt_out | trim | length == 0 else 'ok'),
+         'detail': 'no domain configured (local mode)' if auth_sleuth_domain | length == 0
+                   else ('keytab unreadable or empty: ' ~ auth_sleuth_krb5_keytab
+                         if _kt_missing or _kt_out | trim | length == 0
+                         else 'keytab has ' ~ (_kt_out | trim).split('\n') | length ~ ' entries'),
+         'remediation': '' if not (_kt_missing or _kt_out | trim | length == 0)
+                            or auth_sleuth_domain | length == 0
+                        else 'manual: rejoin the realm to regenerate the keytab'}]}) }}
+
+- name: Live kinit probe with the host keytab
+  when:
+    - auth_sleuth_kinit_probe
+    - auth_sleuth_domain | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      princ=$(klist -k '{{ auth_sleuth_krb5_keytab }}' 2>/dev/null | awk 'NR>3 {print $2; exit}')
+      [ -n "$princ" ] || { echo "NOPRINC"; exit 0; }
+      KRB5CCNAME=MEMORY: kinit -k -t '{{ auth_sleuth_krb5_keytab }}' "$princ" 2>&1 \
+        && echo "KINIT_OK $princ" || echo "KINIT_FAIL $princ"
+  register: _auth_sleuth_kinit
+  changed_when: false
+
+- name: Record the kinit finding
+  when:
+    - auth_sleuth_kinit_probe
+    - auth_sleuth_domain | length > 0
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'keytab_live', 'layer': 'join',
+         'status': 'ok' if 'KINIT_OK' in _auth_sleuth_kinit.stdout
+                   else ('skipped' if 'NOPRINC' in _auth_sleuth_kinit.stdout else 'fail'),
+         'detail': _auth_sleuth_kinit.stdout_lines | last | default(''),
+         'remediation': '' if 'KINIT_OK' in _auth_sleuth_kinit.stdout
+                        else 'manual: check time skew and DC reachability, then rejoin if the account is stale'}]}) }}

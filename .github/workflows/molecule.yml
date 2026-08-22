@@ -1,0 +1,60 @@
+---
+# Molecule / integration tests — three gates keep this from running on
+# every push:
+#
+#   1. Path filter: only role, test, or workflow changes trigger it. Docs,
+#      README, and release-machinery churn never do.
+#   2. Label gate: the Windows job (slower, WinRM setup on a windows-latest
+#      runner) additionally requires the `test-windows` label on the PR.
+#   3. workflow_dispatch: both jobs can be forced manually; the Windows job
+#      via the run_windows input.
+#
+# Superseded runs on the same ref are cancelled (concurrency), so rapid
+# pushes don't stack runners.
+name: Molecule
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'roles/**'
+      - 'tests/**'
+      - 'requirements.yml'
+      - 'requirements.txt'
+      - '.github/workflows/molecule.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'roles/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+concurrency:
+  group: molecule-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test tooling (pinned)
+        run: pip install -r requirements.txt
+
+      - name: Install collection dependencies
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Molecule test
+        run: molecule test
+        working-directory: roles/auth_sleuth
+        env:
+          # Picked up by the role's auto auth — also keeps the shared-runner
+          # anonymous API rate limit from flaking the tests.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PY_COLORS: "1"
+          ANSIBLE_FORCE_COLOR: "1"

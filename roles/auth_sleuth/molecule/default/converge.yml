@@ -1,0 +1,108 @@
+---
+- name: Converge
+  hosts: all
+  vars:
+    _entries_both:
+      - {principal: sleuthgrp, local_group: appmgr}
+      - {principal: sleuthgrp, local_group: sleuthadm, all_services: true}
+  tasks:
+    - name: Scenario 1 — diagnosis only
+      ansible.builtin.include_role:
+        name: auth_sleuth
+      vars:
+        auth_sleuth_dcs: [127.0.0.1]
+        auth_sleuth_dc_ports: [3899]
+        auth_sleuth_test_user: sleuthtest
+        auth_sleuth_expected_groups: [sleuthgrp]
+        auth_sleuth_pam_group_entries: "{{ _entries_both }}"
+        auth_sleuth_pam_probe: true
+        auth_sleuth_fail_on: never
+
+    - name: Assert scenario 1 findings
+      vars:
+        _by_id: "{{ dict(auth_sleuth_result.checks | map(attribute='id') | zip(auth_sleuth_result.checks)) }}"
+      ansible.builtin.assert:
+        that:
+          - _by_id.dc_ports.status == 'ok'
+          - _by_id.sssd_conf.status == 'fail'
+          - "'permissions' in _by_id.sssd_conf.detail"
+          - _by_id.pam_group_hook.status == 'fail'
+          - _by_id.group_conf_entries.status == 'fail'
+          - _by_id.local_groups_exist.status == 'ok'
+          - _by_id.resolve_groups.status == 'ok'
+          - _by_id.resolve_user.status == 'ok'
+          - _by_id.user_membership.status == 'ok'
+          - _by_id.nsswitch.status == 'fail'
+          - _by_id.realm_joined.status == 'skipped'
+          - _by_id.keytab_present.status == 'skipped'
+          - _by_id.time_skew.status == 'skipped'
+          - _by_id.pam_probe.status in ['ok', 'skipped']
+        fail_msg: "scenario 1: {{ auth_sleuth_result.checks }}"
+
+    - name: Scenario 1b — authselect drift correlation (entries complete, hook gone)
+      ansible.builtin.include_role:
+        name: auth_sleuth
+      vars:
+        auth_sleuth_checks: [pam_group_hook, group_conf_entries, authselect_drift]
+        auth_sleuth_pam_group_entries:
+          - {principal: sleuthgrp, local_group: appmgr}
+        auth_sleuth_fail_on: never
+
+    - name: Assert the drift correlation
+      vars:
+        _drift: "{{ auth_sleuth_result.checks | selectattr('id', 'eq', 'authselect_drift') | first }}"
+      ansible.builtin.assert:
+        that: >-
+          (ansible_os_family == 'RedHat' and _drift.status == 'warn'
+           and 'authselect' in _drift.detail)
+          or (ansible_os_family != 'RedHat' and _drift.status in ['ok', 'warn'])
+        fail_msg: "drift: {{ _drift }}"
+
+    - name: Scenario 2 — explicit remediation, gating proof
+      ansible.builtin.include_role:
+        name: auth_sleuth
+      vars:
+        auth_sleuth_dcs: [127.0.0.1]
+        auth_sleuth_dc_ports: [3899]
+        auth_sleuth_test_user: sleuthtest
+        auth_sleuth_expected_groups: [sleuthgrp]
+        auth_sleuth_pam_group_entries: "{{ _entries_both }}"
+        auth_sleuth_remediate: [fix_sssd_conf_perms, add_group_conf_entries, fix_nsswitch]
+        auth_sleuth_fail_on: never
+
+    - name: Assert remediation flipped exactly the listed fixes
+      vars:
+        _by_id: "{{ dict(auth_sleuth_result.checks | map(attribute='id') | zip(auth_sleuth_result.checks)) }}"
+      ansible.builtin.assert:
+        that:
+          - "'fix_sssd_conf_perms' in auth_sleuth_result.remediations_applied"
+          - "'add_group_conf_entries' in auth_sleuth_result.remediations_applied"
+          - _by_id.sssd_conf.status == 'ok'
+          - _by_id.group_conf_entries.status == 'ok'
+          # NOT remediated (reinsert_pam_group was not listed) — gating proof
+          - _by_id.pam_group_hook.status == 'fail'
+          # nsswitch: lineinfile path on non-authselect; manual-only on authselect
+          - (ansible_os_family != 'RedHat' and _by_id.nsswitch.status == 'ok')
+            or (ansible_os_family == 'RedHat')
+        fail_msg: "scenario 2: {{ auth_sleuth_result }}"
+
+    - name: Scenario 3 — the failure policy fails for the right reason
+      block:
+        - name: Run with a closed DC port and fail_on fail
+          ansible.builtin.include_role:
+            name: auth_sleuth
+          vars:
+            auth_sleuth_dcs: [127.0.0.1]
+            auth_sleuth_dc_ports: [3898]
+            auth_sleuth_dc_port_timeout: 2
+            auth_sleuth_checks: [dc_ports]
+            auth_sleuth_fail_on: fail
+
+        - name: The role failed to fail
+          ansible.builtin.fail:
+            msg: policy did not trigger
+      rescue:
+        - name: Confirm the failure was the policy
+          ansible.builtin.assert:
+            that: "'auth-sleuth found problems' in (ansible_failed_result.msg | default(''))"
+            fail_msg: "wrong failure: {{ ansible_failed_result.msg | default('?') }}"

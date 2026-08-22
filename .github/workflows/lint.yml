@@ -1,0 +1,34 @@
+---
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint tooling (pinned)
+        run: pip install -r requirements.txt
+
+      - name: yamllint
+        run: yamllint --strict .
+
+      - name: Install collection dependencies
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: ansible-lint
+        run: ansible-lint
+
+      - name: Validate collection builds (mcowser_p.auth_sleuth)
+        run: ansible-galaxy collection build --force

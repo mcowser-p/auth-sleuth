@@ -1,0 +1,46 @@
+---
+# Ansible Galaxy collection manifest for mcowser_p.auth_sleuth.
+#
+# `version` is a placeholder — semantic-release stamps the released version
+# here at release time (see .releaserc.js) before building the collection
+# artifact. Do not bump it by hand.
+namespace: mcowser_p
+name: auth_sleuth
+version: 0.0.0
+readme: README.md
+authors:
+  - mcowser-p
+description: >-
+  auth-sleuth — SSSD and login-chain troubleshooting with an actionable
+  report and opt-in remediation. Verifies every link a user login
+  depends on: DNS/SRV records, domain-controller reachability
+  (including the Global Catalog ports), time skew, realm join and
+  keytab, sssd service/config/cache, nsswitch, live identity
+  resolution, and the PAM pam_group chain. Org-configurable: domains,
+  DCs, expected groups, and file locations are all variables.
+license:
+  - Apache-2.0
+tags:
+  - sssd
+  - authentication
+  - pam
+  - troubleshooting
+  - linux
+  - identity
+  - tools
+dependencies: {}
+repository: https://github.com/mcowser-p/auth-sleuth
+homepage: https://github.com/mcowser-p/auth-sleuth
+issues: https://github.com/mcowser-p/auth-sleuth/issues
+build_ignore:
+  - .github
+  - .git
+  - .gitignore
+  - .releaserc.js
+  - .ansible-lint
+  - .yamllint
+  - package.json
+  - package-lock.json
+  - node_modules
+  - requirements.txt
+  - '*.tar.gz'

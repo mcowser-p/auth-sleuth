@@ -1,0 +1,13 @@
+---
+- name: Verify
+  hosts: all
+  tasks:
+    - name: Post-remediation state holds
+      ansible.builtin.include_role:
+        name: auth_sleuth
+      vars:
+        auth_sleuth_checks: [sssd_conf, group_conf_entries, local_groups_exist]
+        auth_sleuth_pam_group_entries:
+          - {principal: sleuthgrp, local_group: appmgr}
+          - {principal: sleuthgrp, local_group: sleuthadm, all_services: true}
+        auth_sleuth_fail_on: fail

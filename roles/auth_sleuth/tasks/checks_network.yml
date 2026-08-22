@@ -1,0 +1,129 @@
+---
+# Layer: network — DNS/SRV discovery, DC reachability (incl. Global
+# Catalog ports), time sync and skew.
+
+- name: Probe DNS records
+  when: auth_sleuth_domain | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      dom='{{ auth_sleuth_domain }}'
+      if command -v dig >/dev/null; then q() { dig +short "$2" "$1" | sed 's/\.$//'; };
+      elif command -v host >/dev/null; then q() { host -t "$2" "$1" 2>/dev/null | awk '{print $NF}' | sed 's/\.$//'; };
+      else echo "NO_DNS_TOOL"; exit 0; fi
+      echo "A=$(q "$dom" A | head -3 | tr '\n' ' ')"
+      echo "SRV_LDAP=$(q "_ldap._tcp.$dom" SRV | tr '\n' ' ')"
+      echo "SRV_KRB=$(q "_kerberos._tcp.$dom" SRV | tr '\n' ' ')"
+      echo "SRV_GC=$(q "_gc._tcp.$dom" SRV | tr '\n' ' ')"
+  register: _auth_sleuth_dns
+  changed_when: false
+
+- name: Record DNS findings
+  when: auth_sleuth_domain | length > 0
+  vars:
+    _no_tool: "{{ 'NO_DNS_TOOL' in _auth_sleuth_dns.stdout }}"
+    _a: "{{ (_auth_sleuth_dns.stdout | regex_search('A=(.*)', '\\1') or ['']) | first | trim }}"
+    _ldap: "{{ (_auth_sleuth_dns.stdout | regex_search('SRV_LDAP=(.*)', '\\1') or ['']) | first | trim }}"
+    _krb: "{{ (_auth_sleuth_dns.stdout | regex_search('SRV_KRB=(.*)', '\\1') or ['']) | first | trim }}"
+    _gc: "{{ (_auth_sleuth_dns.stdout | regex_search('SRV_GC=(.*)', '\\1') or ['']) | first | trim }}"
+    _mk: >-
+      {{ [
+        {'id': 'dns_domain', 'layer': 'network',
+         'status': 'skipped' if _no_tool else ('ok' if _a | length > 0 else 'fail'),
+         'detail': 'install dig or host to enable DNS checks' if _no_tool
+                   else ('resolves: ' ~ _a if _a | length > 0
+                         else auth_sleuth_domain ~ ' does not resolve'),
+         'remediation': '' if _no_tool or _a | length > 0 else 'check /etc/resolv.conf points at AD-aware DNS'},
+        {'id': 'dns_srv_ldap', 'layer': 'network',
+         'status': 'skipped' if _no_tool else ('ok' if _ldap | length > 0 else 'fail'),
+         'detail': '' if _no_tool else ('_ldap._tcp SRV: ' ~ (_ldap if _ldap | length > 0 else 'MISSING')),
+         'remediation': '' if _no_tool or _ldap | length > 0 else 'AD SRV records unreachable — wrong DNS server?'},
+        {'id': 'dns_srv_krb', 'layer': 'network',
+         'status': 'skipped' if _no_tool else ('ok' if _krb | length > 0 else 'fail'),
+         'detail': '' if _no_tool else ('_kerberos._tcp SRV: ' ~ (_krb if _krb | length > 0 else 'MISSING')),
+         'remediation': ''},
+        {'id': 'dns_srv_gc', 'layer': 'network',
+         'status': 'skipped' if _no_tool else ('ok' if _gc | length > 0 else 'warn'),
+         'detail': '' if _no_tool else ('_gc._tcp SRV: ' ~ (_gc if _gc | length > 0
+                   else 'missing — cross-domain group resolution may misbehave')),
+         'remediation': ''},
+      ] }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result
+         | combine({'checks': auth_sleuth_result.checks + _mk}) }}
+    _auth_sleuth_srv_dcs: >-
+      {{ _ldap.split() | select('match', '.*[a-zA-Z].*')
+         | reject('match', '^[0-9]+$') | list }}
+
+- name: Determine the DC list
+  ansible.builtin.set_fact:
+    _auth_sleuth_dc_list: >-
+      {{ auth_sleuth_dcs if auth_sleuth_dcs | length > 0
+         else _auth_sleuth_srv_dcs | default([]) }}
+
+- name: Probe DC ports
+  when: _auth_sleuth_dc_list | length > 0
+  ansible.builtin.wait_for:
+    host: "{{ item.0 }}"
+    port: "{{ item.1 }}"
+    timeout: "{{ auth_sleuth_dc_port_timeout }}"
+  register: _auth_sleuth_ports
+  failed_when: false
+  loop: "{{ _auth_sleuth_dc_list | product(auth_sleuth_dc_ports) | list }}"
+  loop_control:
+    label: "{{ item.0 }}:{{ item.1 }}"
+
+- name: Record DC reachability
+  when: _auth_sleuth_dc_list | length > 0
+  vars:
+    _bad: >-
+      {{ _auth_sleuth_ports.results
+         | rejectattr('state', 'defined')
+         | map(attribute='item') | map('join', ':') | list }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [{
+           'id': 'dc_ports', 'layer': 'network',
+           'status': 'ok' if _bad | length == 0 else 'fail',
+           'detail': ('all ' ~ (_auth_sleuth_dc_list | length) ~ ' DC(s) reachable on '
+                      ~ (auth_sleuth_dc_ports | join(','))) if _bad | length == 0
+                     else 'unreachable: ' ~ (_bad | join(', ')),
+           'remediation': '' if _bad | length == 0
+                          else 'open the listed ports (3268/3269 = Global Catalog: needed for group membership)'}]}) }}
+
+- name: Probe time synchronization
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      sync=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)
+      echo "SYNC=$sync"
+      if command -v chronyc >/dev/null; then
+        off=$(chronyc tracking 2>/dev/null | awk '/System time/{print $4}')
+        echo "OFFSET=${off:-unknown}"
+      else
+        echo "OFFSET=no-chrony"
+      fi
+  register: _auth_sleuth_time
+  changed_when: false
+
+- name: Record time findings
+  vars:
+    _sync: "{{ (_auth_sleuth_time.stdout | regex_search('SYNC=(.*)', '\\1') or ['unknown']) | first | trim }}"
+    _off_raw: "{{ (_auth_sleuth_time.stdout | regex_search('OFFSET=(.*)', '\\1') or ['unknown']) | first | trim }}"
+    _off_known: "{{ _off_raw not in ['unknown', 'no-chrony', ''] }}"
+    _skewed: "{{ _off_known and (_off_raw | float | abs) > (auth_sleuth_time_skew_max | float) }}"
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'time_sync', 'layer': 'network',
+         'status': 'ok' if _sync == 'yes' else ('skipped' if _sync == 'unknown' else 'fail'),
+         'detail': 'NTP synchronized: ' ~ _sync,
+         'remediation': '' if _sync == 'yes' else 'sync_time'},
+        {'id': 'time_skew', 'layer': 'network',
+         'status': ('fail' if _skewed else 'ok') if _off_known else 'skipped',
+         'detail': ('clock offset ' ~ _off_raw ~ 's (max ' ~ auth_sleuth_time_skew_max ~ 's — Kerberos breaks beyond this)')
+                   if _off_known else 'chronyc not available',
+         'remediation': 'sync_time' if _skewed else ''}]}) }}

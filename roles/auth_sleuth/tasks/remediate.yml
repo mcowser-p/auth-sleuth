@@ -1,0 +1,124 @@
+---
+# One remediation id (loop_var _auth_sleuth_fix). A fix runs ONLY when
+# some check actually failed (or warned) pointing at this remediation.
+
+- name: Decide whether this fix is needed
+  ansible.builtin.set_fact:
+    _auth_sleuth_fix_needed: >-
+      {{ auth_sleuth_result.checks
+         | selectattr('status', 'in', ['fail', 'warn'])
+         | selectattr('remediation', 'match', '^' ~ _auth_sleuth_fix)
+         | list | length > 0 }}
+
+- name: Apply the fix
+  when: _auth_sleuth_fix_needed
+  block:
+    - name: Clear the sssd cache
+      when: _auth_sleuth_fix == 'clear_cache'
+      ansible.builtin.command:
+        argv: [sss_cache, -E]
+      changed_when: true
+      failed_when: false
+
+    - name: Restart sssd
+      when: _auth_sleuth_fix == 'restart_sssd'
+      ansible.builtin.systemd_service:
+        name: sssd
+        state: restarted
+      failed_when: false
+
+    - name: Enable sssd
+      when: _auth_sleuth_fix == 'enable_sssd'
+      ansible.builtin.systemd_service:
+        name: sssd
+        enabled: true
+      failed_when: false
+
+    - name: Restart sshd
+      when: _auth_sleuth_fix == 'restart_sshd'
+      ansible.builtin.shell:
+        cmd: systemctl restart sshd || systemctl restart ssh
+      changed_when: true
+      failed_when: false
+
+    - name: Fix sssd.conf permissions
+      when: _auth_sleuth_fix == 'fix_sssd_conf_perms'
+      ansible.builtin.file:
+        path: "{{ auth_sleuth_sssd_conf }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Reinsert the pam_group hook
+      when: _auth_sleuth_fix == 'reinsert_pam_group'
+      ansible.builtin.lineinfile:
+        path: "{{ auth_sleuth_pam_sshd_file }}"
+        line: "auth       required     pam_group.so"
+        insertafter: '^auth'
+        firstmatch: true
+
+    - name: Add the missing group.conf entries
+      when: _auth_sleuth_fix == 'add_group_conf_entries'
+      ansible.builtin.lineinfile:
+        path: "{{ auth_sleuth_group_conf_file }}"
+        line: "{{ item.line }}"
+        create: true
+        mode: "0644"
+      loop: "{{ _auth_sleuth_expected_lines | default([]) }}"
+      loop_control:
+        label: "{{ item.line }}"
+
+    - name: Detect authselect before touching nsswitch
+      when: _auth_sleuth_fix == 'fix_nsswitch'
+      ansible.builtin.command:
+        argv: [which, authselect]
+      register: _auth_sleuth_authselect_bin
+      changed_when: false
+      failed_when: false
+
+    - name: Add sss to nsswitch (non-authselect systems)
+      when:
+        - _auth_sleuth_fix == 'fix_nsswitch'
+        - _auth_sleuth_authselect_bin.rc != 0
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: '^{{ item }}:(?!.* sss)(.*)$'
+        line: '{{ item }}:\1 sss'
+        backrefs: true
+      loop: [passwd, group]
+
+    - name: Leave nsswitch to authselect
+      when:
+        - _auth_sleuth_fix == 'fix_nsswitch'
+        - _auth_sleuth_authselect_bin.rc == 0
+      ansible.builtin.debug:
+        msg: >-
+          authselect manages nsswitch here — run
+          'authselect select sssd' (or enable the feature your profile
+          uses) instead of editing the file directly.
+
+    - name: Step the clock and restart chrony
+      when: _auth_sleuth_fix == 'sync_time'
+      ansible.builtin.shell:
+        cmd: chronyc makestep || true; systemctl restart chronyd || systemctl restart chrony
+      changed_when: true
+      failed_when: false
+
+    - name: Terminate the test user's sessions
+      when: _auth_sleuth_fix == 'terminate_user_sessions'
+      ansible.builtin.command:
+        argv: [loginctl, terminate-user, "{{ auth_sleuth_test_user }}"]
+      changed_when: true
+      failed_when: false
+
+    - name: Record the applied fix
+      # the authselect-managed nsswitch path only prints guidance — that
+      # is not an applied fix
+      when: >-
+        not (_auth_sleuth_fix == 'fix_nsswitch'
+             and _auth_sleuth_authselect_bin.rc | default(1) == 0)
+      ansible.builtin.set_fact:
+        auth_sleuth_result: >-
+          {{ auth_sleuth_result
+             | combine({'remediations_applied':
+                  auth_sleuth_result.remediations_applied + [_auth_sleuth_fix]}) }}

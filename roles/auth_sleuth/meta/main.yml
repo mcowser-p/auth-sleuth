@@ -1,0 +1,30 @@
+---
+galaxy_info:
+  namespace: mcowser_p
+  role_name: auth_sleuth
+  author: mcowser-p
+  description: >-
+    SSSD and login-chain troubleshooting - DNS/DC/time, realm and
+    keytab, sssd, nsswitch, identity resolution, and pam_group checks
+    with a report and explicit opt-in remediation
+  license: Apache-2.0
+  min_ansible_version: '2.16'
+
+  platforms:
+    - name: EL
+      versions:
+        - '9'
+        - '10'
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+  galaxy_tags:
+    - sssd
+    - authentication
+    - pam
+    - troubleshooting
+    - identity
+
+dependencies: []

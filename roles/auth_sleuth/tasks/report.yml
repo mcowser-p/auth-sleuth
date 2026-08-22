@@ -1,0 +1,41 @@
+---
+- name: Print the report
+  vars:
+    _failed: "{{ auth_sleuth_result.checks | selectattr('status', 'eq', 'fail') | list }}"
+    _warned: "{{ auth_sleuth_result.checks | selectattr('status', 'eq', 'warn') | list }}"
+  ansible.builtin.debug:
+    msg: |-
+      auth-sleuth report ({{ auth_sleuth_result.checks | length }} checks):
+      {% for c in auth_sleuth_result.checks %}
+        [{{ '%-4s' | format(c.status | upper) }}] {{ '%-20s' | format(c.id) }} {{ c.detail }}
+      {% if c.status in ['fail', 'warn'] and c.remediation | default('') | length > 0 %}
+               remediation: {{ c.remediation }}
+      {% endif %}
+      {% endfor %}
+      {% if auth_sleuth_result.remediations_applied | length > 0 %}
+      remediations applied: {{ auth_sleuth_result.remediations_applied | join(', ') }}
+      {% endif %}
+      verdict: {{ _failed | length }} failed, {{ _warned | length }} warnings
+
+- name: Write the report file
+  when: auth_sleuth_report_path | length > 0
+  ansible.builtin.copy:
+    content: "{{ auth_sleuth_result | to_nice_yaml(indent=2) }}"
+    dest: "{{ auth_sleuth_report_path }}"
+    mode: "0644"
+
+- name: Enforce the failure policy
+  vars:
+    _failed: "{{ auth_sleuth_result.checks | selectattr('status', 'eq', 'fail') | list }}"
+    _warned: "{{ auth_sleuth_result.checks | selectattr('status', 'eq', 'warn') | list }}"
+  ansible.builtin.assert:
+    that: >-
+      auth_sleuth_fail_on == 'never'
+      or (auth_sleuth_fail_on == 'fail' and _failed | length == 0)
+      or (auth_sleuth_fail_on == 'warn' and _failed | length == 0 and _warned | length == 0)
+    fail_msg: |-
+      auth-sleuth found problems ({{ _failed | length }} failed, {{ _warned | length }} warnings):
+      {% for c in _failed + _warned %}
+        - {{ c.id }}: {{ c.detail }}
+      {% endfor %}
+    success_msg: "auth chain healthy ({{ auth_sleuth_result.checks | length }} checks)"

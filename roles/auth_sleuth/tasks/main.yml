@@ -1,0 +1,53 @@
+---
+- name: Initialize the result
+  ansible.builtin.set_fact:
+    auth_sleuth_result:
+      checks: []
+      remediations_applied: []
+
+- name: Run the check suite
+  ansible.builtin.include_tasks: "{{ _auth_sleuth_suite_file }}"
+  loop:
+    - checks_network.yml
+    - checks_join.yml
+    - checks_sssd.yml
+    - checks_identity.yml
+    - checks_pam.yml
+  loop_control:
+    loop_var: _auth_sleuth_suite_file
+
+- name: Apply the check allowlist
+  when: auth_sleuth_checks | length > 0
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result
+         | combine({'checks': auth_sleuth_result.checks
+             | selectattr('id', 'in', auth_sleuth_checks) | list}) }}
+
+- name: Apply requested remediations for failed checks
+  ansible.builtin.include_tasks: remediate.yml
+  loop: "{{ auth_sleuth_remediate }}"
+  loop_control:
+    loop_var: _auth_sleuth_fix
+
+- name: Re-run the check suite after remediation
+  when: auth_sleuth_result.remediations_applied | length > 0
+  block:
+    - name: Reset check results for the verification pass
+      ansible.builtin.set_fact:
+        auth_sleuth_result: >-
+          {{ auth_sleuth_result | combine({'checks': []}) }}
+
+    - name: Verify remediations
+      ansible.builtin.include_tasks: "{{ _auth_sleuth_suite_file }}"
+      loop:
+        - checks_network.yml
+        - checks_join.yml
+        - checks_sssd.yml
+        - checks_identity.yml
+        - checks_pam.yml
+      loop_control:
+        loop_var: _auth_sleuth_suite_file
+
+- name: Report
+  ansible.builtin.include_tasks: report.yml

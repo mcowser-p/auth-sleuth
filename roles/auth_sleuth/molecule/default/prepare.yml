@@ -1,0 +1,70 @@
+---
+- name: Prepare a seeded-fault auth environment
+  hosts: all
+  tasks:
+    - name: Install the toolchain
+      ansible.builtin.package:
+        name: "{{ ['openssh-server', 'openssl'] + (['authselect'] if ansible_os_family == 'RedHat' else []) }}"
+      failed_when: false
+
+    - name: Try to install pamtester (EPEL/universe; tolerated if absent)
+      ansible.builtin.shell:
+        cmd: |
+          if command -v dnf >/dev/null; then
+            dnf install -y epel-release >/dev/null 2>&1 || true
+            dnf install -y pamtester >/dev/null 2>&1 || true
+          else
+            apt-get update -qq >/dev/null 2>&1 || true
+            apt-get install -y -qq pamtester >/dev/null 2>&1 || true
+          fi
+          command -v pamtester || echo "no pamtester"
+      changed_when: true
+
+    - name: Create local groups and the test user
+      ansible.builtin.group:
+        name: "{{ item }}"
+      loop: [sleuthgrp, appmgr, sleuthadm]
+
+    - name: Create the test user in sleuthgrp
+      ansible.builtin.user:
+        name: sleuthtest
+        groups: sleuthgrp
+        append: true
+
+    # --- Seeded faults -----------------------------------------------------
+    - name: Synthetic sssd.conf with WRONG permissions (fault 1)
+      ansible.builtin.copy:
+        dest: /etc/sssd/sssd.conf
+        content: |
+          [sssd]
+          domains = example.test
+          services = nss, pam
+          [domain/example.test]
+          id_provider = ldap
+        mode: "0644"
+      # 0644 is the seeded fault — the check requires 0600 root:root
+
+    - name: Only ONE of the two expected group.conf entries (fault 2)
+      ansible.builtin.lineinfile:
+        path: /etc/security/group.conf
+        line: "sshd;!tty*;%sleuthgrp;Al0000-2400;appmgr"
+        create: true
+        mode: "0644"
+
+    - name: Ensure the pam_group hook is absent (fault 3)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/sshd
+        regexp: 'pam_group\.so'
+        state: absent
+
+    - name: Stand-in DC listener on 3899
+      ansible.builtin.shell:
+        cmd: nohup python3 -c "import socketserver; socketserver.TCPServer(('127.0.0.1', 3899), socketserver.BaseRequestHandler).serve_forever()" >/dev/null 2>&1 & touch /opt/.dc3899
+        creates: /opt/.dc3899
+      changed_when: true
+
+    - name: Wait for the listener
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 3899
+        timeout: 15

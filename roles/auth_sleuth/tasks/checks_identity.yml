@@ -1,0 +1,80 @@
+---
+# Layer: identity — live NSS resolution of the expected groups and the
+# test user. This is the end-to-end proof that sssd -> nsswitch works.
+
+- name: Resolve expected groups
+  when: auth_sleuth_expected_groups | length > 0
+  ansible.builtin.command:
+    argv: [getent, group, "{{ _auth_sleuth_gname }}"]
+  vars:
+    _auth_sleuth_gname: >-
+      {{ item ~ ('@' ~ auth_sleuth_domain if auth_sleuth_domain | length > 0 else '') }}
+  register: _auth_sleuth_getent_g
+  changed_when: false
+  failed_when: false
+  loop: "{{ auth_sleuth_expected_groups }}"
+
+- name: Record group resolution
+  when: auth_sleuth_expected_groups | length > 0
+  vars:
+    _misses: >-
+      {{ _auth_sleuth_getent_g.results | selectattr('rc', 'ne', 0)
+         | map(attribute='item') | list }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'resolve_groups', 'layer': 'identity',
+         'status': 'ok' if _misses | length == 0 else 'fail',
+         'detail': ('all ' ~ (auth_sleuth_expected_groups | length) ~ ' expected groups resolve')
+                   if _misses | length == 0
+                   else 'unresolvable: ' ~ (_misses | join(', ')),
+         'remediation': '' if _misses | length == 0
+                        else ('clear_cache — if still failing: group missing in AD '
+                              '(see declarative_access playbook 1) or GC port blocked')}]}) }}
+
+- name: Resolve the test user
+  when: auth_sleuth_test_user | length > 0
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      u='{{ auth_sleuth_test_user }}'
+      if getent passwd "$u" >/dev/null; then
+        echo "USER=ok"
+        echo "GROUPS=$(id -Gn "$u" 2>/dev/null | tr ' ' ',')"
+      else
+        echo "USER=missing"
+      fi
+  register: _auth_sleuth_id
+  changed_when: false
+
+- name: Record user resolution and membership
+  when: auth_sleuth_test_user | length > 0
+  vars:
+    _user_ok: "{{ 'USER=ok' in _auth_sleuth_id.stdout }}"
+    _member_of: >-
+      {{ ((_auth_sleuth_id.stdout | regex_search('GROUPS=(.*)', '\\1') or [''])
+          | first).split(',') | map('trim') | select | list }}
+    _expected_local: >-
+      {{ auth_sleuth_pam_group_entries | map(attribute='local_group') | list }}
+    _missing_membership: >-
+      {{ [] if not _user_ok
+         else auth_sleuth_expected_groups
+              | map('regex_replace', '^(.*)$',
+                    '\1@' ~ auth_sleuth_domain if auth_sleuth_domain | length > 0 else '\1')
+              | reject('in', _member_of) | list }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'resolve_user', 'layer': 'identity',
+         'status': 'ok' if _user_ok else 'fail',
+         'detail': (auth_sleuth_test_user ~ ' resolves; member of ' ~ (_member_of | length) ~ ' groups')
+                   if _user_ok else auth_sleuth_test_user ~ ' does not resolve via NSS',
+         'remediation': '' if _user_ok else 'clear_cache — then check sssd_online and dc_ports'},
+        {'id': 'user_membership', 'layer': 'identity',
+         'status': 'skipped' if not _user_ok or auth_sleuth_expected_groups | length == 0
+                   else ('ok' if _missing_membership | length == 0 else 'warn'),
+         'detail': 'expected-group membership confirmed' if _missing_membership | length == 0
+                   else auth_sleuth_test_user ~ ' not in: ' ~ (_missing_membership | join(', ')),
+         'remediation': '' if _missing_membership | length == 0
+                        else 'clear_cache (stale membership) — or the user genuinely is not in the group'}]}) }}

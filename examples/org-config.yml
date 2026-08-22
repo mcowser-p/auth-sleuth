@@ -1,0 +1,19 @@
+---
+# Organization expectations for mcowser_p.auth_sleuth — mirror of the
+# declarative_access collection's conventions. Everything here is an
+# example; nothing is a role default.
+auth_sleuth_domain: ads.example.com
+auth_sleuth_dcs: []               # empty = discover from _ldap SRV records
+auth_sleuth_test_user: svc.probe
+auth_sleuth_expected_groups:
+  - "{{ ansible_hostname | lower }}-app_restricted"
+  - "{{ ansible_hostname | lower }}-app_full"
+auth_sleuth_pam_group_entries:
+  - principal: "{{ ansible_hostname | lower }}-app_full"
+    local_group: wheel
+  - principal: "{{ ansible_hostname | lower }}-admin_full"
+    local_group: wheel
+    all_services: true
+auth_sleuth_kinit_probe: true
+auth_sleuth_pam_probe: true
+auth_sleuth_report_path: /var/tmp/auth-sleuth-report.yml

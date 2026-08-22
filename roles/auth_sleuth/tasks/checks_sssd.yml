@@ -1,0 +1,114 @@
+---
+# Layer: sssd — service, config, allow-lists, online status, logs, nsswitch.
+
+- name: Probe sssd state
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      echo "ACTIVE=$(systemctl is-active sssd 2>/dev/null || echo unknown)"
+      echo "ENABLED=$(systemctl is-enabled sssd 2>/dev/null || echo unknown)"
+      cfg='{{ auth_sleuth_sssd_conf }}'
+      if [ -e "$cfg" ]; then
+        echo "CONF=present"
+        echo "PERMS=$(stat -c '%a %U:%G' "$cfg" 2>/dev/null)"
+        if [ -r "$cfg" ]; then
+          echo "DOMAINS=$(grep -oP '^\[domain/\K[^]]+' "$cfg" | tr '\n' ' ')"
+          echo "ALLOW_G=$(grep -oP '^simple_allow_groups\s*=\s*\K.*' "$cfg" || true)"
+          echo "ALLOW_U=$(grep -oP '^simple_allow_users\s*=\s*\K.*' "$cfg" || true)"
+        else
+          echo "READABLE=no"
+        fi
+      else
+        echo "CONF=absent"
+      fi
+      if command -v sssctl >/dev/null && [ -n '{{ auth_sleuth_domain }}' ]; then
+        echo "ONLINE<<E"
+        sssctl domain-status '{{ auth_sleuth_domain }}' 2>&1 | head -5 || true
+        echo "E"
+      fi
+      echo "NSS_PASSWD=$(grep -E '^passwd:' /etc/nsswitch.conf 2>/dev/null || echo missing)"
+      echo "NSS_GROUP=$(grep -E '^group:' /etc/nsswitch.conf 2>/dev/null || echo missing)"
+      logdir='{{ auth_sleuth_sssd_log_dir }}'
+      if [ -d "$logdir" ] && [ -r "$logdir" ]; then
+        echo "LOGHITS<<E"
+        for f in "$logdir"/*.log; do
+          [ -r "$f" ] || continue
+          tail -n {{ auth_sleuth_log_lines }} "$f" 2>/dev/null \
+            | grep -En '{{ auth_sleuth_log_patterns | join("|") }}' \
+            | tail -5 | sed "s|^|$(basename "$f"):|" || true
+        done
+        echo "E"
+      fi
+  register: _auth_sleuth_sssd
+  changed_when: false
+
+- name: Record sssd findings
+  vars:
+    _o: "{{ _auth_sleuth_sssd.stdout }}"
+    _active: "{{ (_o | regex_search('ACTIVE=(.*)', '\\1') or ['unknown']) | first | trim }}"
+    _enabled: "{{ (_o | regex_search('ENABLED=(.*)', '\\1') or ['unknown']) | first | trim }}"
+    _conf: "{{ (_o | regex_search('CONF=(.*)', '\\1') or ['absent']) | first | trim }}"
+    _perms: "{{ (_o | regex_search('PERMS=(.*)', '\\1') or ['']) | first | trim }}"
+    _domains: "{{ (_o | regex_search('DOMAINS=(.*)', '\\1') or ['']) | first | trim }}"
+    _allow_g: "{{ (_o | regex_search('ALLOW_G=(.*)', '\\1') or ['']) | first | trim }}"
+    _online_out: "{{ (_o | regex_search('ONLINE<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+    _nss_p: "{{ (_o | regex_search('NSS_PASSWD=(.*)', '\\1') or ['missing']) | first }}"
+    _nss_g: "{{ (_o | regex_search('NSS_GROUP=(.*)', '\\1') or ['missing']) | first }}"
+    _loghits: "{{ (_o | regex_search('LOGHITS<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first | trim }}"
+    _perms_ok: "{{ _perms.startswith('600 root:root') }}"
+    _domain_listed: >-
+      {{ auth_sleuth_domain | length == 0
+         or (auth_sleuth_domain | lower) in (_domains | lower) }}
+    _expected_g: >-
+      {{ auth_sleuth_expected_groups
+         | map('regex_replace', '^(.*)$',
+               '\1@' ~ auth_sleuth_domain if auth_sleuth_domain | length > 0 else '\1')
+         | list }}
+    _missing_allow: >-
+      {{ [] if auth_sleuth_expected_groups | length == 0 or _allow_g | length == 0
+         else _expected_g | reject('in', _allow_g | lower | split(',') | map('trim') | list)
+              | list }}
+  ansible.builtin.set_fact:
+    auth_sleuth_result: >-
+      {{ auth_sleuth_result | combine({'checks': auth_sleuth_result.checks + [
+        {'id': 'sssd_service', 'layer': 'sssd',
+         'status': 'ok' if _active == 'active' and _enabled == 'enabled'
+                   else ('fail' if _active != 'active' else 'warn'),
+         'detail': 'active=' ~ _active ~ ' enabled=' ~ _enabled,
+         'remediation': '' if _active == 'active' and _enabled == 'enabled'
+                        else ('restart_sssd' if _active != 'active' else 'enable_sssd')},
+        {'id': 'sssd_conf', 'layer': 'sssd',
+         'status': 'fail' if _conf == 'absent' or not _perms_ok
+                   else ('ok' if _domain_listed else 'fail'),
+         'detail': (auth_sleuth_sssd_conf ~ ' missing') if _conf == 'absent'
+                   else ('permissions ' ~ _perms ~ ' (must be 600 root:root)') if not _perms_ok
+                   else ('domains: ' ~ _domains if _domain_listed
+                         else auth_sleuth_domain ~ ' not among domains: ' ~ _domains),
+         'remediation': 'manual: configure sssd (realm join writes it)' if _conf == 'absent'
+                        else ('fix_sssd_conf_perms' if not _perms_ok
+                        else ('' if _domain_listed else 'manual: check the [domain/...] stanza name'))},
+        {'id': 'sssd_allow', 'layer': 'sssd',
+         'status': 'skipped' if auth_sleuth_expected_groups | length == 0 or _conf == 'absent'
+                   else ('ok' if _missing_allow | length == 0 else 'fail'),
+         'detail': 'no expected groups configured' if auth_sleuth_expected_groups | length == 0
+                   else ('simple_allow_groups covers the expected groups'
+                         if _missing_allow | length == 0
+                         else 'not permitted (realm permit missing?): ' ~ (_missing_allow | join(', '))),
+         'remediation': '' if _missing_allow | length == 0
+                        else 'manual: realm permit --groups <group>@<domain>'},
+        {'id': 'sssd_online', 'layer': 'sssd',
+         'status': 'skipped' if _online_out | length == 0
+                   else ('ok' if 'Online' in _online_out and 'Offline' not in _online_out else 'fail'),
+         'detail': (_online_out | trim).split('\n') | join(' | ') if _online_out | length > 0
+                   else 'sssctl not available or no domain configured',
+         'remediation': '' if 'Offline' not in _online_out else 'clear_cache'},
+        {'id': 'nsswitch', 'layer': 'sssd',
+         'status': 'ok' if 'sss' in _nss_p and 'sss' in _nss_g else 'fail',
+         'detail': _nss_p ~ ' / ' ~ _nss_g,
+         'remediation': '' if 'sss' in _nss_p and 'sss' in _nss_g else 'fix_nsswitch'},
+        {'id': 'sssd_logs', 'layer': 'sssd',
+         'status': 'ok' if _loghits | length == 0 else 'warn',
+         'detail': 'no recent errors' if _loghits | length == 0
+                   else 'recent log hits: ' ~ (_loghits.split('\n') | length | string) ~ ' (see report file)',
+         'remediation': ''}]}) }}

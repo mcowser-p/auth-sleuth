@@ -1,0 +1,11 @@
+---
+# ansible-playbook -i inventory mcowser_p.auth_sleuth.sleuth \
+#   -e @org-config.yml [-e "remediate=['clear_cache','restart_sssd']"]
+- name: Auth sleuth
+  hosts: all
+  become: true          # most checks read root-only files
+  roles:
+    - role: mcowser_p.auth_sleuth.auth_sleuth
+      vars:
+        auth_sleuth_remediate: "{{ remediate | default([]) }}"
+        auth_sleuth_fail_on: "{{ fail_on | default('fail') }}"

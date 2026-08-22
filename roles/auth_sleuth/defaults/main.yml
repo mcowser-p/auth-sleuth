@@ -1,0 +1,59 @@
+---
+# defaults for mcowser_p.auth_sleuth.auth_sleuth
+# Everything is org-configurable — no organization-specific values ship
+# here. The role never escalates; run it with play-level `become: true`
+# (most checks read root-only files). Checks it cannot perform degrade
+# to status=skipped with a hint, never to silent success.
+
+# --- Environment expectations ---------------------------------------------
+auth_sleuth_domain: ""            # AD domain; empty = local-principal mode
+                                  # (domain-dependent checks are skipped)
+auth_sleuth_dcs: []               # explicit domain controllers; empty =
+                                  # discovered from the _ldap SRV records
+auth_sleuth_dc_ports: [88, 389, 445, 464, 636, 3268, 3269]
+# 88 kerberos, 389/636 ldap(s), 445 smb, 464 kpasswd, 3268/3269 global
+# catalog — SSSD's AD provider resolves cross-domain group membership
+# via the GC, so a blocked 3268 shows up as "user resolves but groups
+# are incomplete". The check reports per DC and per port.
+auth_sleuth_dc_port_timeout: 4
+auth_sleuth_time_skew_max: 300    # seconds (Kerberos tolerance)
+
+# --- Subjects to verify ----------------------------------------------------
+auth_sleuth_test_user: ""         # identity-resolution / PAM-probe subject
+auth_sleuth_expected_groups: []   # group names; @domain appended when
+                                  # auth_sleuth_domain is set
+# pam_group entries expected in group.conf (the declarative_access
+# format): principal gets %-prefixed for groups and @domain appended
+# when the domain is set; all_services=true writes the `*;*` form used
+# for admin groups.
+auth_sleuth_pam_group_entries: []
+#  - {principal: myhost-app_restricted, local_group: appmgr, group: true}
+#  - {principal: myhost-admin_full, local_group: wheel, group: true, all_services: true}
+
+# --- File locations (declarative_access conventions) -----------------------
+auth_sleuth_group_conf_file: /etc/security/group.conf
+auth_sleuth_pam_sshd_file: /etc/pam.d/sshd
+auth_sleuth_sssd_conf: /etc/sssd/sssd.conf
+auth_sleuth_krb5_keytab: /etc/krb5.keytab
+auth_sleuth_sssd_log_dir: /var/log/sssd
+auth_sleuth_log_patterns: ['(?i)fail', '(?i)error', 'denied']
+auth_sleuth_log_lines: 200        # recent log lines to scan per file
+
+# --- Live probes (opt-in) --------------------------------------------------
+auth_sleuth_kinit_probe: false    # kinit -k with the host keytab
+auth_sleuth_pam_probe: false      # pamtester acct_mgmt/open_session for
+                                  # the test user (no password involved)
+
+# --- Scope and policy ------------------------------------------------------
+auth_sleuth_checks: []            # empty = every applicable check;
+                                  # otherwise an allowlist of check ids
+auth_sleuth_remediate: []         # EXPLICIT remediation ids; there is no
+                                  # 'all'. A fix only runs when its
+                                  # check actually failed. Available:
+                                  # clear_cache, restart_sssd, enable_sssd,
+                                  # restart_sshd, fix_sssd_conf_perms,
+                                  # reinsert_pam_group, add_group_conf_entries,
+                                  # fix_nsswitch, sync_time,
+                                  # terminate_user_sessions
+auth_sleuth_fail_on: fail         # fail | warn | never
+auth_sleuth_report_path: ""       # optional YAML report on the target

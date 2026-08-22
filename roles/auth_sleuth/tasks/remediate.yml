@@ -36,9 +36,19 @@
 
     - name: Restart sshd
       when: _auth_sleuth_fix == 'restart_sshd'
-      ansible.builtin.shell:
-        cmd: systemctl restart sshd || systemctl restart ssh
-      changed_when: true
+      ansible.builtin.systemd_service:
+        name: sshd
+        state: restarted
+      register: _auth_sleuth_sshd_restart
+      ignore_errors: true
+
+    - name: Restart ssh (debian unit name)
+      when:
+        - _auth_sleuth_fix == 'restart_sshd'
+        - _auth_sleuth_sshd_restart is failed
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: restarted
       failed_when: false
 
     - name: Fix sssd.conf permissions
@@ -97,11 +107,28 @@
           'authselect select sssd' (or enable the feature your profile
           uses) instead of editing the file directly.
 
-    - name: Step the clock and restart chrony
+    - name: Step the clock
       when: _auth_sleuth_fix == 'sync_time'
-      ansible.builtin.shell:
-        cmd: chronyc makestep || true; systemctl restart chronyd || systemctl restart chrony
+      ansible.builtin.command:
+        argv: [chronyc, makestep]
       changed_when: true
+      failed_when: false
+
+    - name: Restart chronyd
+      when: _auth_sleuth_fix == 'sync_time'
+      ansible.builtin.systemd_service:
+        name: chronyd
+        state: restarted
+      register: _auth_sleuth_chrony_restart
+      ignore_errors: true
+
+    - name: Restart chrony (debian unit name)
+      when:
+        - _auth_sleuth_fix == 'sync_time'
+        - _auth_sleuth_chrony_restart is failed
+      ansible.builtin.systemd_service:
+        name: chrony
+        state: restarted
       failed_when: false
 
     - name: Terminate the test user's sessions

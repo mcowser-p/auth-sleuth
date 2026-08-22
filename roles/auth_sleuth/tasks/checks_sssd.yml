@@ -41,6 +41,7 @@
         done
       fi
       echo "E"
+      echo "DONE"
   register: _auth_sleuth_sssd
   changed_when: false
 
@@ -54,12 +55,12 @@
     _domains: "{{ (_o | regex_search('DOMAINS=(.*)', '\\1') or ['']) | first | trim }}"
     _allow_g: "{{ (_o | regex_search('ALLOW_G=(.*)', '\\1') or ['']) | first | trim }}"
     _online_out: >-
-      {{ (_o.split('ONLINE<<E\n', 1)[1].split('\nE\n', 1)[0]
+      {{ ((_o.split('ONLINE<<E\n', 1) | last).split('\nE\n', 1) | first
            if 'ONLINE<<E' in _o else '') }}
     _nss_p: "{{ (_o | regex_search('NSS_PASSWD=(.*)', '\\1') or ['missing']) | first }}"
     _nss_g: "{{ (_o | regex_search('NSS_GROUP=(.*)', '\\1') or ['missing']) | first }}"
     _loghits: >-
-      {{ (_o.split('LOGHITS<<E\n', 1)[1].split('\nE\n', 1)[0]
+      {{ ((_o.split('LOGHITS<<E\n', 1) | last).split('\nE\n', 1) | first
            if 'LOGHITS<<E' in _o else '') }}
     _perms_ok: "{{ _perms.startswith('600 root:root') }}"
     _domain_listed: >-

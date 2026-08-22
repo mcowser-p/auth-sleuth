@@ -32,6 +32,12 @@
         append: true
 
     # --- Seeded faults -----------------------------------------------------
+    - name: Ensure /etc/sssd exists
+      ansible.builtin.file:
+        path: /etc/sssd
+        state: directory
+        mode: "0711"
+
     - name: Synthetic sssd.conf with WRONG permissions (fault 1)
       ansible.builtin.copy:
         dest: /etc/sssd/sssd.conf

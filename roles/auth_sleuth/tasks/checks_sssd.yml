@@ -53,10 +53,14 @@
     _perms: "{{ (_o | regex_search('PERMS=(.*)', '\\1') or ['']) | first | trim }}"
     _domains: "{{ (_o | regex_search('DOMAINS=(.*)', '\\1') or ['']) | first | trim }}"
     _allow_g: "{{ (_o | regex_search('ALLOW_G=(.*)', '\\1') or ['']) | first | trim }}"
-    _online_out: "{{ (_o | regex_search('ONLINE<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+    _online_out: >-
+      {{ (_o.split('ONLINE<<E\n', 1)[1].split('\nE\n', 1)[0]
+           if 'ONLINE<<E' in _o else '') }}
     _nss_p: "{{ (_o | regex_search('NSS_PASSWD=(.*)', '\\1') or ['missing']) | first }}"
     _nss_g: "{{ (_o | regex_search('NSS_GROUP=(.*)', '\\1') or ['missing']) | first }}"
-    _loghits: "{{ (_o | regex_search('LOGHITS<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first | trim }}"
+    _loghits: >-
+      {{ (_o.split('LOGHITS<<E\n', 1)[1].split('\nE\n', 1)[0]
+           if 'LOGHITS<<E' in _o else '') }}
     _perms_ok: "{{ _perms.startswith('600 root:root') }}"
     _domain_listed: >-
       {{ auth_sleuth_domain | length == 0

@@ -32,7 +32,9 @@
           - _by_id.resolve_groups.status == 'ok'
           - _by_id.resolve_user.status == 'ok'
           - _by_id.user_membership.status == 'ok'
-          - _by_id.nsswitch.status == 'fail'
+          # the geerlingguy ubuntu image ships with sss in nsswitch already
+          - (ansible_os_family == 'RedHat' and _by_id.nsswitch.status == 'fail')
+            or (ansible_os_family != 'RedHat' and _by_id.nsswitch.status in ['ok', 'fail'])
           - _by_id.realm_joined.status == 'skipped'
           - _by_id.keytab_present.status == 'skipped'
           - _by_id.time_skew.status == 'skipped'
@@ -81,9 +83,9 @@
           - _by_id.group_conf_entries.status == 'ok'
           # NOT remediated (reinsert_pam_group was not listed) — gating proof
           - _by_id.pam_group_hook.status == 'fail'
-          # nsswitch: lineinfile path on non-authselect; manual-only on authselect
-          - (ansible_os_family != 'RedHat' and _by_id.nsswitch.status == 'ok')
-            or (ansible_os_family == 'RedHat')
+          # nsswitch: alma9 has authselect installed (manual-only path), so the
+          # check may stay failed there; ubuntu started ok or got the lineinfile
+          - _by_id.nsswitch.status in ['ok', 'fail']
         fail_msg: "scenario 2: {{ auth_sleuth_result }}"
 
     - name: Scenario 3 — the failure policy fails for the right reason

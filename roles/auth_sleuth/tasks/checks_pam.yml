@@ -43,7 +43,9 @@
   vars:
     _o: "{{ _auth_sleuth_pam.stdout }}"
     _hook: "{{ (_o | regex_search('HOOK=(.*)', '\\1') or ['unreadable']) | first | trim }}"
-    _gconf: "{{ (_o | regex_search('GCONF<<E\\n([\\s\\S]*?)\\nE', '\\1') or ['']) | first }}"
+    _gconf: >-
+      {{ (_o.split('GCONF<<E\n', 1)[1].split('\nE\n', 1)[0]
+           if 'GCONF<<E' in _o else '') }}
     _sshd: "{{ (_o | regex_search('SSHD=(.*)', '\\1') or ['unknown']) | first | trim }}"
     _authselect: "{{ 'AUTHSELECT=present' in _o }}"
     _want_lines: "{{ _auth_sleuth_expected_lines | default([]) | map(attribute='line') | list }}"

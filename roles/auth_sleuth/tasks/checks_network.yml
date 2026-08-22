@@ -11,7 +11,7 @@
       dom='{{ auth_sleuth_domain }}'
       if command -v dig >/dev/null; then q() { dig +short "$2" "$1" | sed 's/\.$//'; };
       elif command -v host >/dev/null; then q() { host -t "$2" "$1" 2>/dev/null | awk '{print $NF}' | sed 's/\.$//'; };
-      else echo "NO_DNS_TOOL"; exit 0; fi
+      else echo "NO_DNS_TOOL"; echo "A="; echo "SRV_LDAP="; echo "SRV_KRB="; echo "SRV_GC="; exit 0; fi
       echo "A=$(q "$dom" A | head -3 | tr '\n' ' ')"
       echo "SRV_LDAP=$(q "_ldap._tcp.$dom" SRV | tr '\n' ' ')"
       echo "SRV_KRB=$(q "_kerberos._tcp.$dom" SRV | tr '\n' ' ')"

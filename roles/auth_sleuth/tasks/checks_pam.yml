@@ -15,13 +15,10 @@
       else
         echo "HOOK=unreadable"
       fi
-      if [ -r "$gc" ]; then
-        echo "GCONF<<E"
-        grep -Ev '^\s*(#|$)' "$gc" || true
-        echo "E"
-      else
-        echo "GCONF_STATE=unreadable"
-      fi
+      [ -r "$gc" ] || echo "GCONF_STATE=unreadable"
+      echo "GCONF<<E"
+      grep -Ev '^\s*(#|$)' "$gc" 2>/dev/null || true
+      echo "E"
       echo "SSHD=$(systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo unknown)"
       command -v authselect >/dev/null && echo "AUTHSELECT=present" || echo "AUTHSELECT=absent"
       command -v pamtester >/dev/null && echo "PAMTESTER=present" || echo "PAMTESTER=absent"

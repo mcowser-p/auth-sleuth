@@ -44,6 +44,7 @@
         echo "GROUPS=$(id -Gn "$u" 2>/dev/null | tr ' ' ',')"
       else
         echo "USER=missing"
+        echo "GROUPS="
       fi
   register: _auth_sleuth_id
   changed_when: false

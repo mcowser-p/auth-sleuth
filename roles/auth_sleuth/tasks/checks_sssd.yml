@@ -12,34 +12,35 @@
       if [ -e "$cfg" ]; then
         echo "CONF=present"
         echo "PERMS=$(stat -c '%a %U:%G' "$cfg" 2>/dev/null)"
-        if [ -r "$cfg" ]; then
-          echo "DOMAINS=$(grep -oP '^\[domain/\K[^]]+' "$cfg" | tr '\n' ' ')"
-          echo "ALLOW_G=$(grep -oP '^simple_allow_groups\s*=\s*\K.*' "$cfg" || true)"
-          echo "ALLOW_U=$(grep -oP '^simple_allow_users\s*=\s*\K.*' "$cfg" || true)"
-        else
-          echo "READABLE=no"
-        fi
       else
         echo "CONF=absent"
+        echo "PERMS="
       fi
+      if [ -r "$cfg" ]; then
+        echo "DOMAINS=$(grep -oP '^\[domain/\K[^]]+' "$cfg" | tr '\n' ' ')"
+        echo "ALLOW_G=$(grep -oP '^simple_allow_groups\s*=\s*\K.*' "$cfg" || true)"
+        echo "ALLOW_U=$(grep -oP '^simple_allow_users\s*=\s*\K.*' "$cfg" || true)"
+      else
+        echo "DOMAINS="; echo "ALLOW_G="; echo "ALLOW_U="
+      fi
+      echo "ONLINE<<E"
       if command -v sssctl >/dev/null && [ -n '{{ auth_sleuth_domain }}' ]; then
-        echo "ONLINE<<E"
         sssctl domain-status '{{ auth_sleuth_domain }}' 2>&1 | head -5 || true
-        echo "E"
       fi
+      echo "E"
       echo "NSS_PASSWD=$(grep -E '^passwd:' /etc/nsswitch.conf 2>/dev/null || echo missing)"
       echo "NSS_GROUP=$(grep -E '^group:' /etc/nsswitch.conf 2>/dev/null || echo missing)"
       logdir='{{ auth_sleuth_sssd_log_dir }}'
+      echo "LOGHITS<<E"
       if [ -d "$logdir" ] && [ -r "$logdir" ]; then
-        echo "LOGHITS<<E"
         for f in "$logdir"/*.log; do
           [ -r "$f" ] || continue
           tail -n {{ auth_sleuth_log_lines }} "$f" 2>/dev/null \
             | grep -En '{{ auth_sleuth_log_patterns | join("|") }}' \
             | tail -5 | sed "s|^|$(basename "$f"):|" || true
         done
-        echo "E"
       fi
+      echo "E"
   register: _auth_sleuth_sssd
   changed_when: false
 

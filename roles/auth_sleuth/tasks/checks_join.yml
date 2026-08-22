@@ -6,20 +6,15 @@
     executable: /bin/bash
     cmd: |
       set -o pipefail
-      if command -v realm >/dev/null; then
-        echo "REALM_LIST<<E"
-        realm list 2>/dev/null || true
-        echo "E"
-      else
-        echo "REALM_TOOL=missing"
-      fi
-      if command -v klist >/dev/null && [ -r '{{ auth_sleuth_krb5_keytab }}' ]; then
-        echo "KEYTAB<<E"
-        klist -k '{{ auth_sleuth_krb5_keytab }}' 2>/dev/null | tail -n +4 || true
-        echo "E"
-      else
-        echo "KEYTAB=unreadable-or-no-klist"
-      fi
+      command -v realm >/dev/null || echo "REALM_TOOL=missing"
+      echo "REALM_LIST<<E"
+      realm list 2>/dev/null || true
+      echo "E"
+      { command -v klist >/dev/null && [ -r '{{ auth_sleuth_krb5_keytab }}' ]; } \
+        || echo "KEYTAB=unreadable-or-no-klist"
+      echo "KEYTAB<<E"
+      klist -k '{{ auth_sleuth_krb5_keytab }}' 2>/dev/null | tail -n +4 || true
+      echo "E"
   register: _auth_sleuth_join
   changed_when: false
 

@@ -25,6 +25,10 @@
   register: _auth_sleuth_pam
   changed_when: false
 
+- name: Reset the expected group.conf lines
+  ansible.builtin.set_fact:
+    _auth_sleuth_expected_lines: []
+
 - name: Build the expected group.conf lines
   ansible.builtin.set_fact:
     _auth_sleuth_expected_lines: >-

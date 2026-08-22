@@ -2,6 +2,11 @@
 - name: Prepare a seeded-fault auth environment
   hosts: all
   tasks:
+    - name: Refresh the apt cache
+      when: ansible_os_family == 'Debian'
+      ansible.builtin.apt:
+        update_cache: true
+
     - name: Install the toolchain
       ansible.builtin.package:
         name: "{{ ['openssh-server', 'openssl'] + (['authselect'] if ansible_os_family == 'RedHat' else []) }}"

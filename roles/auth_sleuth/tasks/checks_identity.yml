@@ -54,8 +54,9 @@
   vars:
     _user_ok: "{{ 'USER=ok' in _auth_sleuth_id.stdout }}"
     _member_of: >-
-      {{ ((_auth_sleuth_id.stdout | regex_search('GROUPS=(.*)', '\\1') or [''])
-          | first).split(',') | map('trim') | select | list }}
+      {{ (_auth_sleuth_id.stdout_lines | select('match', '^GROUPS=')
+          | first | default('GROUPS=')).split('=', 1)[1]
+         .split(',') | map('trim') | select | list }}
     _expected_local: >-
       {{ auth_sleuth_pam_group_entries | map(attribute='local_group') | list }}
     _missing_membership: >-

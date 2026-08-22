@@ -54,13 +54,14 @@
     _perms: "{{ (_o | regex_search('PERMS=(.*)', '\\1') or ['']) | first | trim }}"
     _domains: "{{ (_o | regex_search('DOMAINS=(.*)', '\\1') or ['']) | first | trim }}"
     _allow_g: "{{ (_o | regex_search('ALLOW_G=(.*)', '\\1') or ['']) | first | trim }}"
+    _nl: "\n"
     _online_out: >-
-      {{ ((_o.split('ONLINE<<E\n', 1) | last).split('\nE\n', 1) | first
+      {{ ((_o.split('ONLINE<<E' ~ _nl, 1) | last).split(_nl ~ 'E' ~ _nl, 1) | first
            if 'ONLINE<<E' in _o else '') }}
     _nss_p: "{{ (_o | regex_search('NSS_PASSWD=(.*)', '\\1') or ['missing']) | first }}"
     _nss_g: "{{ (_o | regex_search('NSS_GROUP=(.*)', '\\1') or ['missing']) | first }}"
     _loghits: >-
-      {{ ((_o.split('LOGHITS<<E\n', 1) | last).split('\nE\n', 1) | first
+      {{ ((_o.split('LOGHITS<<E' ~ _nl, 1) | last).split(_nl ~ 'E' ~ _nl, 1) | first
            if 'LOGHITS<<E' in _o else '') }}
     _perms_ok: "{{ _perms.startswith('600 root:root') }}"
     _domain_listed: >-
@@ -116,5 +117,5 @@
         {'id': 'sssd_logs', 'layer': 'sssd',
          'status': 'ok' if _loghits | length == 0 else 'warn',
          'detail': 'no recent errors' if _loghits | length == 0
-                   else 'recent log hits: ' ~ (_loghits.split('\n') | length | string) ~ ' (see report file)',
+                   else 'recent log hits: ' ~ (_loghits.split(_nl) | length | string) ~ ' (see report file)',
          'remediation': ''}]}) }}

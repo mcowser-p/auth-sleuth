@@ -43,13 +43,14 @@
   vars:
     _o: "{{ _auth_sleuth_pam.stdout }}"
     _hook: "{{ (_o | regex_search('HOOK=(.*)', '\\1') or ['unreadable']) | first | trim }}"
+    _nl: "\n"
     _gconf: >-
-      {{ ((_o.split('GCONF<<E\n', 1) | last).split('\nE\n', 1) | first
+      {{ ((_o.split('GCONF<<E' ~ _nl, 1) | last).split(_nl ~ 'E' ~ _nl, 1) | first
            if 'GCONF<<E' in _o else '') }}
     _sshd: "{{ (_o | regex_search('SSHD=(.*)', '\\1') or ['unknown']) | first | trim }}"
     _authselect: "{{ 'AUTHSELECT=present' in _o }}"
     _want_lines: "{{ _auth_sleuth_expected_lines | default([]) | map(attribute='line') | list }}"
-    _gconf_lines: "{{ _gconf.split('\n') | map('trim') | select | list }}"
+    _gconf_lines: "{{ _gconf.split(_nl) | map('trim') | select | list }}"
     _missing_lines: "{{ _want_lines | reject('in', _gconf_lines) | list }}"
     _entries_ok: "{{ auth_sleuth_pam_group_entries | length > 0 and _missing_lines | length == 0 }}"
     _drift: >-

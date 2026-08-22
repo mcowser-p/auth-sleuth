@@ -22,15 +22,16 @@
 - name: Record join findings
   vars:
     _realm_missing: "{{ 'REALM_TOOL=missing' in _auth_sleuth_join.stdout }}"
+    _nl: "\n"
     _realm_out: >-
-      {{ ((_auth_sleuth_join.stdout.split('REALM_LIST<<E\n', 1) | last).split('\nE\n', 1) | first
+      {{ ((_auth_sleuth_join.stdout.split('REALM_LIST<<E' ~ _nl, 1) | last).split(_nl ~ 'E' ~ _nl, 1) | first
            if 'REALM_LIST<<E' in _auth_sleuth_join.stdout else '') }}
     _joined_here: >-
       {{ auth_sleuth_domain | length > 0
          and (auth_sleuth_domain | lower) in (_realm_out | lower) }}
     _kt_missing: "{{ 'KEYTAB=unreadable-or-no-klist' in _auth_sleuth_join.stdout }}"
     _kt_out: >-
-      {{ ((_auth_sleuth_join.stdout.split('KEYTAB<<E\n', 1) | last).split('\nE\n', 1) | first
+      {{ ((_auth_sleuth_join.stdout.split('KEYTAB<<E' ~ _nl, 1) | last).split(_nl ~ 'E' ~ _nl, 1) | first
            if 'KEYTAB<<E' in _auth_sleuth_join.stdout else '') }}
   ansible.builtin.set_fact:
     auth_sleuth_result: >-
@@ -50,7 +51,7 @@
          'detail': 'no domain configured (local mode)' if auth_sleuth_domain | length == 0
                    else ('keytab unreadable or empty: ' ~ auth_sleuth_krb5_keytab
                          if _kt_missing or _kt_out | trim | length == 0
-                         else 'keytab has ' ~ (_kt_out | trim).split('\n') | length ~ ' entries'),
+                         else 'keytab has ' ~ (_kt_out | trim).split(_nl) | length ~ ' entries'),
          'remediation': '' if not (_kt_missing or _kt_out | trim | length == 0)
                             or auth_sleuth_domain | length == 0
                         else 'manual: rejoin the realm to regenerate the keytab'}]}) }}
